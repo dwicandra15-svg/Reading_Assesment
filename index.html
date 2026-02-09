@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>English Reading Assessment - Cloud Version</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <!-- Supabase SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-gradient-to-br from-blue-600 via-blue-500 to-purple-600 min-h-screen p-3">
+    <div id="app" class="max-w-xl mx-auto"></div>
+    <script>
+        // ============================================
+        // KONFIGURASI SUPABASE ANDA
+        // ============================================
+        const SUPABASE_URL = 'https://vicvnciuwroqmvvkkmsa.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZpY3ZuY2l1d3JvcW12dmtrbXNhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1OTAyNjQsImV4cCI6MjA4NjE2NjI2NH0.R1B1rMfsy2_bxK4BM6tWj-ObnKHk-sJY_H-0zMyv9VY';
+        
+        // Inisialisasi Supabase client
+        let supabaseClient = null;
+        
+        function initSupabase() {
+            if (typeof supabase !== 'undefined') {
+                supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+                console.log('✅ Supabase connected!');
+                return true;
+            }
+            console.error('❌ Supabase not loaded');
+            return false;
+        }
+
+        const ADMIN_USERNAME = 'Unknown';
+        const ADMIN_PASSWORD = '123456';
+        const STORAGE_KEY = 'reading_missions_v1';
+        const CHAPTER_KEY = 'chapter_unit_v1';
+        
+        // ============================================
+        // MATERI MEMBACA - SEMUA LEVEL 7 MATERI
+        // ============================================
+        const defaultMissions = {
+            beginner: [
+                "I love to travel and see new places",
+                "The beach is very beautiful today",
+                "We visited a wonderful museum yesterday",
+                "My family enjoys camping in the mountains",
+                "The hotel room has a nice view",
+                "I like to take pictures of nature",
+                "Traveling makes me very happy"
+            ],
+            intermediate: [
+                "I had an amazing experience during my trip to Bali last summer",
+                "The view from the mountain top was absolutely breathtaking",
+                "We explored ancient temples and learned about local culture",
+                "Swimming in the crystal clear water was unforgettable",
+                "The local food was delicious and very spicy",
+                "I met many friendly people during my vacation",
+                "This journey has changed my perspective on life"
+            ],
+            advanced: [
+                "Embarking on this extraordinary adventure provided invaluable insights",
+                "The magnificent landscape encompassed towering peaks and pristine valleys",
+                "Immersing myself in diverse cultures broadened my global understanding",
+                "Navigating through challenging terrain tested my physical endurance",
+                "The architectural marvels demonstrated remarkable historical significance",
+                "Interacting with indigenous communities enriched my cultural awareness",
+                "This transformative expedition fundamentally altered my worldview"
+            ],
+            expert: [
+                "Traversing through this unprecedented expedition yielded profound comprehension",
+                "The intricate tapestry of cultural nuances necessitated meticulous observation",
+                "Synthesizing experiential knowledge with theoretical frameworks proved invaluable",
+                "Confronting linguistic barriers facilitated unprecedented cognitive adaptation",
+                "The ephemeral beauty of untouched wilderness evoked sublime contemplation",
+                "Navigating complex socio-political landscapes demanded diplomatic acumen",
+                "This paradigm-shifting odyssey transcended conventional pedagogical boundaries"
+            ]
+        };
+
+        const scoringThresholds = {
+            beginner: { excellent: 70, good: 50, enough: 30 },
+            intermediate: { excellent: 80, good: 60, enough: 35 },
+            advanced: { excellent: 88, good: 68, enough: 42 },
+            expert: { excellent: 95, good: 75, enough: 50 }
+        };
+
+        let state = {
+            studentName: '', studentClass: '', selectedLevel: '', showForm: true,
+            currentMission: 0, missionScores: [], showFinalScore: false,
+            isSpeaking: false, isRecording: false, transcript: '', showResult: false,
+            recognition: null, errorMessage: '', showAdminLogin: false, showAdminMenu: false,
+            adminView: null, adminUser: '', adminPass: '',
+            adminSelectedLevel: 'beginner', adminNewSentence: '', adminEditIndex: null, adminEditValue: '',
+            chapterTitle: 'Chapter 2: Taking Trips', unitTitle: 'Unit 2: What an Experience',
+            filterLevel: 'all', filterClass: '', searchName: '',
+            isLoading: false, dbResults: []
+        };
+
+        let missionsByLevel = loadMissions();
+        const saved = loadChapterUnit();
+        state.chapterTitle = saved.chapter;
+        state.unitTitle = saved.unit;
+
+        // ============================================
+        // FUNGSI DATABASE SUPABASE
+        // ============================================
+        
+        async function saveToSupabase(resultData) {
+            if (!supabaseClient) {
+                console.error('Supabase not initialized');
+                return false;
+            }
+            
+            try {
+                state.isLoading = true;
+                render();
+                
+                const { data, error } = await supabaseClient
+                    .from('student_results')
+                    .insert([{
+                        student_name: resultData.name,
+                        student_class: resultData.class,
+                        level: resultData.level,
+                        score: resultData.score,
+                        grade: resultData.grade,
+                        chapter_title: resultData.chapter,
+                        unit_title: resultData.unit,
+                        mission_scores: resultData.missionScores
+                    }]);
+                
+                if (error) throw error;
+                
+                console.log('✅ Saved to Supabase:', data);
+                return true;
+            } catch (err) {
+                console.error('❌ Error saving to Supabase:', err);
+                alert('Gagal menyimpan ke cloud. Periksa koneksi internet.');
+                return false;
+            } finally {
+                state.isLoading = false;
+                render();
+            }
+        }
+
+        async function loadFromSupabase() {
+            if (!supabaseClient) return [];
+            
+            try {
+                let query = supabaseClient
+                    .from('student_results')
+                    .select('*')
+                    .order('created_at', { ascending: false });
+                
+                if (state.filterLevel !== 'all') {
+                    query = query.eq('level', state.filterLevel);
+                }
+                if (state.filterClass.trim()) {
+                    query = query.ilike('student_class', `%${state.filterClass}%`);
+                }
+                if (state.searchName.trim()) {
+                    query = query.ilike('student_name', `%${state.searchName}%`);
+                }
+                
+                const { data, error } = await query;
+                
+                if (error) throw error;
+                
+                return data.map(r => ({
+                    id: r.id,
+                    name: r.student_name,
+                    class: r.student_class,
+                    level: r.level,
+                    score: r.score,
+                    grade: r.grade,
+                    date: new Date(r.created_at).toLocaleDateString('id-ID'),
+                    time: new Date(r.created_at).toLocaleTimeString('id-ID'),
+                    chapter: r.chapter_title,
+                    unit: r.unit_title,
+                    missionScores: r.mission_scores || []
+                }));
+            } catch (err) {
+                console.error('❌ Error loading from Supabase:', err);
+                return [];
+            }
+        }
+
+        async function deleteFromSupabase(id) {
+            if (!supabaseClient) return false;
+            
+            try {
+                const { error } = await supabaseClient
+                    .from('student_results')
+                    .delete()
+                    .eq('id', id);
+                
+                if (error) throw error;
+                return true;
+            } catch (err) {
+                console.error('❌ Error deleting:', err);
+                return false;
+            }
+        }
+
+        // ============================================
+        // FUNGSI LAINNYA
+        // ============================================
+        
+        function loadMissions() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) return JSON.parse(JSON.stringify(defaultMissions));
+                return JSON.parse(raw);
+            } catch { return JSON.parse(JSON.stringify(defaultMissions)); }
+        }
+        
+        function loadChapterUnit() {
+            try {
+                const raw = localStorage.getItem(CHAPTER_KEY);
+                if (!raw) return { chapter: 'Chapter 2: Taking Trips', unit: 'Unit 2: What an Experience' };
+                return JSON.parse(raw);
+            } catch { return { chapter: 'Chapter 2: Taking Trips', unit: 'Unit 2: What an Experience' }; }
+        }
+        
+        function saveChapterUnit(ch, un) {
+            localStorage.setItem(CHAPTER_KEY, JSON.stringify({ chapter: ch, unit: un }));
+        }
+        
+        function saveMissions(m) { 
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(m)); 
+        }
+
+        function initSpeech() {
+            if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) return false;
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            const r = new SR();
+            r.continuous = false; 
+            r.interimResults = false; 
+            r.lang = 'en-US';
+            r.onstart = () => { state.isRecording = true; render(); };
+            r.onresult = (e) => { 
+                state.transcript = e.results[0][0].transcript; 
+                state.isRecording = false; 
+                render(); 
+            };
+            r.onerror = () => { state.isRecording = false; render(); };
+            r.onend = () => { state.isRecording = false; render(); };
+            state.recognition = r;
+            return true;
+        }
+
+        async function testMic() {
+            try {
+                const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+                s.getTracks().forEach(t => t.stop());
+                alert('✅ MICROPHONE BERHASIL!');
+            } catch { 
+                alert('❌ MICROPHONE DITOLAK!'); 
+            }
+        }
+
+        function handleStart() {
+            const n = document.getElementById('studentName').value.trim();
+            const c = document.getElementById('studentClass').value.trim();
+            const l = document.getElementById('level').value;
+            if (!n || !c || !l) { 
+                alert('⚠️ Lengkapi semua field!'); 
+                return; 
+            }
+            state.studentName = n; 
+            state.studentClass = c; 
+            state.selectedLevel = l; 
+            state.showForm = false;
+            state.missionScores = Array(missionsByLevel[l].length).fill(null);
+            initSpeech();
+            render();
+        }
+
+        function speakText() {
+            if (window.speechSynthesis.speaking) { 
+                window.speechSynthesis.cancel(); 
+                state.isSpeaking = false; 
+                render(); 
+                return; 
+            }
+            const u = new SpeechSynthesisUtterance(missionsByLevel[state.selectedLevel][state.currentMission]);
+            u.lang = 'en-US'; 
+            u.rate = 0.6;
+            u.onstart = () => { state.isSpeaking = true; render(); };
+            u.onend = () => { state.isSpeaking = false; render(); };
+            window.speechSynthesis.speak(u);
+        }
+
+        function handleJudge() {
+            if (!state.recognition) return;
+            state.transcript = ''; 
+            state.showResult = false;
+            try { 
+                state.recognition.start(); 
+            } catch {}
+        }
+
+        function calculateScore(orig, spk, lvl) {
+            if (!spk) return 'Bad';
+            const norm = t => t.toLowerCase().replace(/[.,!?'"]/g, '').trim();
+            const ow = norm(orig).split(' ');
+            const sw = norm(spk).split(' ');
+            let m = 0;
+            ow.forEach(w => { if (sw.includes(w)) m++; });
+            const acc = (m / ow.length) * 100;
+            const th = scoringThresholds[lvl];
+            if (acc >= th.excellent) return 'Excellent';
+            if (acc >= th.good) return 'Good';
+            if (acc >= th.enough) return 'Enough';
+            return 'Bad';
+        }
+
+        function handleResult() {
+            if (!state.transcript) { 
+                alert('⚠️ Klik JUDGE dulu!'); 
+                return; 
+            }
+            const score = calculateScore(
+                missionsByLevel[state.selectedLevel][state.currentMission], 
+                state.transcript, 
+                state.selectedLevel
+            );
+            state.missionScores[state.currentMission] = score;
+            state.showResult = true;
+            render();
+        }
+
+        async function handleNext() {
+            if (!state.missionScores[state.currentMission]) { 
+                alert('⚠️ Klik RESULT dulu!'); 
+                return; 
+            }
+            const total = missionsByLevel[state.selectedLevel].length;
+            if (state.currentMission < total - 1) {
+                state.currentMission++; 
+                state.transcript = ''; 
+                state.showResult = false;
+                render();
+            } else { 
+                await saveStudentResult();
+                state.showFinalScore = true; 
+                render();
+            }
+        }
+        
+        async function saveStudentResult() {
+            const finalScore = getFinalScore();
+            const finalGrade = getFinalGrade(finalScore);
+            
+            const resultData = {
+                name: state.studentName,
+                class: state.studentClass,
+                level: state.selectedLevel,
+                score: finalScore,
+                grade: finalGrade,
+                chapter: state.chapterTitle,
+                unit: state.unitTitle,
+                missionScores: [...state.missionScores]
+            };
+            
+            await saveToSupabase(resultData);
+        }
+
+        function getFinalScore() {
+            const sv = { 'Excellent': 100, 'Good': 75, 'Enough': 50, 'Bad': 25 };
+            const total = missionsByLevel[state.selectedLevel].length || 1;
+            const sum = state.missionScores.reduce((s, sc) => s + (sv[sc] || 0), 0);
+            return Math.round(sum / total);
+        }
+
+        function getFinalGrade(avg) {
+            if (avg >= 85) return 'Excellent';
+            if (avg >= 65) return 'Good';
+            if (avg >= 40) return 'Enough';
+            return 'Bad';
+        }
+
+        function getScoreColor(s) {
+            const c = {
+                'Excellent': 'bg-green-500 text-white', 
+                'Good': 'bg-blue-500 text-white', 
+                'Enough': 'bg-yellow-500 text-white', 
+                'Bad': 'bg-red-500 text-white'
+            };
+            return c[s] || 'bg-gray-500 text-white';
+        }
+
+        function getScoreColorLight(s) {
+            const c = {
+                'Excellent': 'text-green-700 bg-green-100 border-2 border-green-400', 
+                'Good': 'text-blue-700 bg-blue-100 border-2 border-blue-400', 
+                'Enough': 'text-yellow-700 bg-yellow-100 border-2 border-yellow-400', 
+                'Bad': 'text-red-700 bg-red-100 border-2 border-red-400'
+            };
+            return c[s] || 'text-gray-700 bg-gray-100';
+        }
+
+        function getLevelColor(l) {
+            const c = { 
+                beginner: 'bg-green-500', 
+                intermediate: 'bg-blue-500', 
+                advanced: 'bg-purple-500', 
+                expert: 'bg-red-500' 
+            };
+            return c[l] || 'bg-gray-500';
+        }
+
+        function getLevelName(l) {
+            const n = { 
+                beginner: '🌱 BEGINNER', 
+                intermediate: '🌿 INTERMEDIATE', 
+                advanced: '🌳 ADVANCED', 
+                expert: '🏆 EXPERT' 
+            };
+            return n[l] || l;
+        }
+
+        function restartApp() {
+            state.showForm = true; 
+            state.showFinalScore = false; 
+            state.currentMission = 0; 
+            state.transcript = ''; 
+            state.showResult = false; 
+            state.missionScores = [];
+            render();
+        }
+        
+        function exitToHome() {
+            if (confirm('⚠️ Keluar dari Reading Test?\n\nProgress Anda akan hilang!')) {
+                state.showForm = true; 
+                state.showFinalScore = false; 
+                state.currentMission = 0; 
+                state.transcript = ''; 
+                state.showResult = false; 
+                state.missionScores = [];
+                state.studentName = '';
+                state.studentClass = '';
+                state.selectedLevel = '';
+                render();
+            }
+        }
+
+        function openAdmin() { 
+            state.showAdminLogin = true; 
+            render(); 
+        }
+        
+        function closeAdmin() { 
+            state.showAdminLogin = false; 
+            state.showAdminMenu = false; 
+            state.adminView = null; 
+            state.adminUser = ''; 
+            state.adminPass = ''; 
+            render(); 
+        }
+        
+        function handleLogin() {
+            if (state.adminUser === ADMIN_USERNAME && state.adminPass === ADMIN_PASSWORD) {
+                state.showAdminLogin = false; 
+                state.showAdminMenu = true; 
+                state.adminView = 'menu';
+            } else { 
+                alert('❌ Salah!'); 
+            }
+            render();
+        }
+        
+        function gotoMenu() { 
+            state.adminView = 'menu'; 
+            render(); 
+        }
+        
+        function gotoAdd() { 
+            state.adminView = 'add'; 
+            render(); 
+        }
+        
+        function gotoChange() { 
+            state.adminView = 'change'; 
+            render(); 
+        }
+        
+        function gotoChapter() { 
+            state.adminView = 'chapter'; 
+            render(); 
+        }
+        
+        async function gotoStudentList() {
+            state.adminView = 'students';
+            state.filterLevel = 'all';
+            state.filterClass = '';
+            state.searchName = '';
+            await renderStudentListData();
+        }
+        
+        async function renderStudentListData() {
+            state.isLoading = true;
+            render();
+            
+            const results = await loadFromSupabase();
+            state.dbResults = results;
+            
+            state.isLoading = false;
+            render();
+        }
+        
+        function updateChapter() {
+            const ch = document.getElementById('chInput').value.trim();
+            const un = document.getElementById('unInput').value.trim();
+            if (ch && un) {
+                state.chapterTitle = ch; 
+                state.unitTitle = un;
+                saveChapterUnit(ch, un);
+                alert('✅ Berhasil!');
+                render();
+            }
+        }
+        
+        function addMaterial() {
+            const txt = (state.adminNewSentence || '').trim();
+            if (!txt) { 
+                alert('Kosong!'); 
+                return; 
+            }
+            missionsByLevel[state.adminSelectedLevel].push(txt);
+            saveMissions(missionsByLevel);
+            state.adminNewSentence = '';
+            alert('✅ Ditambahkan!');
+            render();
+        }
+        
+        function deleteMaterial(lvl, idx) {
+            if (!confirm('Hapus?')) return;
+            missionsByLevel[lvl].splice(idx, 1);
+            saveMissions(missionsByLevel);
+            render();
+        }
+        
+        function startEdit(lvl, idx) { 
+            state.adminEditIndex = idx; 
+            state.adminEditValue = missionsByLevel[lvl][idx]; 
+            render(); 
+        }
+        
+        function cancelEdit() { 
+            state.adminEditIndex = null; 
+            state.adminEditValue = ''; 
+            render(); 
+        }
+        
+        function saveEdit(lvl, idx) {
+            const txt = (state.adminEditValue || '').trim();
+            if (!txt) { 
+                alert('Kosong!'); 
+                return; 
+            }
+            missionsByLevel[lvl][idx] = txt;
+            saveMissions(missionsByLevel);
+            state.adminEditIndex = null; 
+            state.adminEditValue = '';
+            alert('✅ Diperbarui!');
+            render();
+        }
+        
+        async function deleteResult(id) {
+            if (!confirm('Hapus data siswa ini?')) return;
+            
+            const success = await deleteFromSupabase(id);
+            if (success) {
+                alert('✅ Data dihapus!');
+                await renderStudentListData();
+            } else {
+                alert('❌ Gagal menghapus data');
+            }
+        }
+        
+        async function clearAllResults() {
+            if (!confirm('HAPUS SEMUA DATA SISWA?\n\nPeringatan: Tindakan ini tidak dapat dibatalkan!')) return;
+            if (!confirm('Apakah Anda yakin? Data akan hilang permanent!')) return;
+            
+            const results = await loadFromSupabase();
+            for (const r of results) {
+                await deleteFromSupabase(r.id);
+            }
+            
+            alert('✅ Semua data telah dihapus!');
+            await renderStudentListData();
+        }
+        
+        function downloadExcel() {
+            const results = state.dbResults || [];
+            if (results.length === 0) {
+                alert('Tidak ada data untuk didownload!');
+                return;
+            }
+            
+            const ws_data = [
+                ['ENGLISH READING ASSESSMENT REPORT'],
+                ['Chapter: ' + state.chapterTitle],
+                ['Unit: ' + state.unitTitle],
+                ['Tanggal: ' + new Date().toLocaleDateString('id-ID')],
+                [],
+                ['No', 'Nama Siswa', 'Kelas', 'Level', 'Score', 'Predikat', 'Tanggal', 'Waktu']
+            ];
+            
+            results.forEach((r, idx) => {
+                ws_data.push([
+                    idx + 1,
+                    r.name,
+                    r.class,
+                    getLevelName(r.level),
+                    r.score,
+                    r.grade,
+                    r.date,
+                    r.time
+                ]);
+            });
+            
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet(ws_data);
+            
+            ws['!cols'] = [{wch: 5}, {wch: 25}, {wch: 10}, {wch: 18}, {wch: 8}, {wch: 12}, {wch: 15}, {wch: 12}];
+            
+            XLSX.utils.book_append_sheet(wb, ws, 'Results');
+            XLSX.writeFile(wb, `Reading_Assessment_${new Date().toISOString().split('T')[0]}.xlsx`);
+        }
+        
+        function downloadPDF() {
+            const results = state.dbResults || [];
+            if (results.length === 0) {
+                alert('Tidak ada data untuk didownload!');
+                return;
+            }
+            
+            const printWindow = window.open('', '', 'width=900,height=700');
+            let html = '<html><head><title>Reading Assessment Report</title>';
+            html += '<style>';
+            html += 'body{font-family:Arial,sans-serif;padding:20px}';
+            html += 'h1{text-align:center;color:#1e40af;margin-bottom:10px}';
+            html += 'h2{color:#4b5563;font-size:14px;margin:5px 0}';
+            html += 'table{width:100%;border-collapse:collapse;margin-top:20px}';
+            html += 'th,td{border:1px solid #ddd;padding:8px;text-align:left;font-size:11px}';
+            html += 'th{background-color:#3b82f6;color:white;font-weight:bold}';
+            html += 'tr:nth-child(even){background-color:#f9fafb}';
+            html += '.header-info{margin-bottom:20px;background:#f0f9ff;padding:15px;border-radius:8px;border:2px solid #3b82f6}';
+            html += '.excellent{color:#15803d;font-weight:bold}';
+            html += '.good{color:#1d4ed8;font-weight:bold}';
+            html += '.enough{color:#a16207;font-weight:bold}';
+            html += '.bad{color:#b91c1c;font-weight:bold}';
+            html += '@media print{button{display:none}}';
+            html += '</style></head><body>';
+            
+            html += '<h1>📊 ENGLISH READING ASSESSMENT REPORT</h1>';
+            html += '<div class="header-info">';
+            html += '<h2><strong>Chapter:</strong> ' + state.chapterTitle + '</h2>';
+            html += '<h2><strong>Unit:</strong> ' + state.unitTitle + '</h2>';
+            html += '<h2><strong>Tanggal Cetak:</strong> ' + new Date().toLocaleDateString('id-ID') + ' ' + new Date().toLocaleTimeString('id-ID') + '</h2>';
+            html += '<h2><strong>Total Siswa:</strong> ' + results.length + '</h2>';
+            html += '</div>';
+            
+            html += '<table><thead><tr>';
+            html += '<th>No</th><th>Nama Siswa</th><th>Kelas</th><th>Level</th><th>Score</th><th>Predikat</th><th>Tanggal</th><th>Waktu</th>';
+            html += '</tr></thead><tbody>';
+            
+            results.forEach((r, idx) => {
+                const gradeClass = r.grade.toLowerCase();
+                html += '<tr><td>' + (idx + 1) + '</td>';
+                html += '<td><strong>' + r.name + '</strong></td>';
+                html += '<td>' + r.class + '</td>';
+                html += '<td>' + getLevelName(r.level) + '</td>';
+                html += '<td style="text-align:center"><strong>' + r.score + '</strong></td>';
+                html += '<td class="' + gradeClass + '">' + r.grade + '</td>';
+                html += '<td>' + r.date + '</td>';
+                html += '<td>' + r.time + '</td></tr>';
+            });
+            
+            html += '</tbody></table>';
+            html += '<div style="margin-top:30px;text-align:center">';
+            html += '<button onclick="window.print()" style="padding:12px 30px;background:#3b82f6;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:bold;font-size:14px">🖨️ Print / Save as PDF</button>';
+            html += '</div></body></html>';
+            
+            printWindow.document.write(html);
+            printWindow.document.close();
+        }
+
+        function render() {
+            const app = document.getElementById('app');
+            if (state.showForm) renderForm(app);
+            else if (state.showFinalScore) renderFinalScore(app);
+            else renderAssessment(app);
+        }
+
+        function renderForm(app) {
+            const th = scoringThresholds;
+            let html = '<div class="min-h-screen flex items-center justify-center p-4"><div class="w-full max-w-md">';
+            
+            html += '<div class="bg-gray-100 border-2 border-gray-300 text-gray-700 font-semibold text-center p-3 rounded-lg mb-4 relative">';
+            html += '<button onclick="openAdmin()" class="absolute top-2 right-2 text-black font-black hover:bg-gray-300 px-3 py-1 rounded-lg text-2xl">⋮</button>';
+            html += 'Created & Supported by:<br><span class="font-black text-gray-900">Deni Apel Jumbo</span>';
+            html += '<br><span class="text-xs text-blue-600">☁️ Cloud Version (Supabase)</span>';
+            html += '</div>';
+            
+            html += '<div class="bg-white rounded-3xl shadow-2xl p-8"><div class="text-center mb-6">';
+            html += '<div class="text-6xl mb-3">📚</div>';
+            html += '<h1 class="text-2xl font-bold text-gray-900 mb-1">English Reading Assessment</h1>';
+            html += '<p class="text-sm text-gray-600">' + state.chapterTitle + ' - ' + state.unitTitle + '</p></div>';
+            html += '<div class="space-y-4 mb-6">';
+            html += '<div><label class="block text-sm font-bold text-gray-800 mb-2">👤 Student Name:</label>';
+            html += '<input type="text" id="studentName" placeholder="Enter your name" class="w-full px-4 py-3 border-2 border-blue-200 rounded-xl focus:border-blue-500 focus:outline-none text-base"/></div>';
+            html += '<div><label class="block text-sm font-bold text-gray-800 mb-2">🏫 Class:</label>';
+            html += '<input type="text" id="studentClass" placeholder="e.g., 9A, 9B, 9C" class="w-full px-4 py-3 border-2 border-blue-200 rounded-xl focus:border-blue-500 focus:outline-none text-base"/></div>';
+            html += '<div><label class="block text-sm font-bold text-gray-800 mb-2">🎯 Difficulty Level:</label>';
+            html += '<select id="level" class="w-full px-4 py-3 border-2 border-blue-200 rounded-xl focus:border-blue-500 focus:outline-none font-semibold bg-white text-base">';
+            html += '<option value="">-- Select Level --</option>';
+            html += '<option value="beginner">🌱 BEGINNER (7 Missions)</option>';
+            html += '<option value="intermediate">🌿 INTERMEDIATE (7 Missions)</option>';
+            html += '<option value="advanced">🌳 ADVANCED (7 Missions)</option>';
+            html += '<option value="expert">🏆 EXPERT (7 Missions)</option>';
+            html += '</select>';
+            
+            html += '<div class="bg-yellow-50 border-2 border-yellow-400 rounded-xl p-3 mt-2">';
+            html += '<p class="text-yellow-800 font-bold text-sm">⚠️ Perhatian: Semakin tinggi level, semakin susah mendapat nilai Excellent!</p>';
+            html += '</div>';
+            
+            html += '</div></div>';
+            html += '<button onclick="handleStart()" class="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:from-blue-600 hover:to-purple-700 transform hover:scale-105 transition">🚀 Start Assessment</button>';
+            html += '</div></div></div>';
+            if (state.showAdminLogin) html += renderAdminLogin();
+            if (state.showAdminMenu) html += renderAdminMenu();
+            app.innerHTML = html;
+        }
+
+        function renderAdminLogin() {
+            let html = '<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">';
+            html += '<div class="bg-white rounded-2xl p-6 w-full max-w-sm">';
+            html += '<div class="flex justify-between items-center mb-4"><h3 class="text-lg font-bold">Guru Login</h3>';
+            html += '<button onclick="closeAdmin()" class="text-gray-500 hover:text-gray-700 text-2xl">✕</button></div>';
+            html += '<div class="space-y-3"><div><label class="text-sm font-semibold text-gray-700">Username</label>';
+            html += '<input value="' + state.adminUser + '" oninput="state.adminUser=this.value" placeholder="Username" class="w-full mt-1 px-3 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"/></div>';
+            html += '<div><label class="text-sm font-semibold text-gray-700">Password</label>';
+            html += '<input type="password" value="' + state.adminPass + '" oninput="state.adminPass=this.value" placeholder="Password" class="w-full mt-1 px-3 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"/></div>';
+            html += '<div class="grid grid-cols-2 gap-2 pt-2">';
+            html += '<button onclick="closeAdmin()" class="px-4 py-2 rounded-lg border-2 hover:bg-gray-50">Cancel</button>';
+            html += '<button onclick="handleLogin()" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold">Login</button>';
+            html += '</div></div></div></div>';
+            return html;
+        }
+
+        function renderAdminMenu() {
+            let html = '<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-auto">';
+            html += '<div class="bg-white rounded-2xl p-6 w-full max-w-lg my-4 max-h-[90vh] overflow-y-auto">';
+            if (state.adminView === 'menu') {
+                html += '<h3 class="text-xl font-bold mb-4 text-center">Admin Menu</h3><div class="space-y-3">';
+                html += '<button onclick="gotoStudentList()" class="w-full px-4 py-3 rounded-xl bg-yellow-600 hover:bg-yellow-700 text-white font-bold text-left flex items-center gap-3 shadow-lg"><span class="text-2xl">📊</span> Student Results (Cloud)</button>';
+                html += '<button onclick="gotoAdd()" class="w-full px-4 py-3 rounded-xl bg-green-600 hover:bg-green-700 text-white font-bold text-left flex items-center gap-3 shadow-lg"><span class="text-2xl">➕</span> Add Material</button>';
+                html += '<button onclick="gotoChange()" class="w-full px-4 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-left flex items-center gap-3 shadow-lg"><span class="text-2xl">📝</span> Change Material</button>';
+                html += '<button onclick="gotoChapter()" class="w-full px-4 py-3 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-left flex items-center gap-3 shadow-lg"><span class="text-2xl">📖</span> Change Chapter & Unit</button>';
+                html += '<button onclick="closeAdmin()" class="w-full px-4 py-3 rounded-xl bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold shadow">Logout</button></div>';
+            } else if (state.adminView === 'students') html += renderStudentList();
+            else if (state.adminView === 'add') html += renderAddView();
+            else if (state.adminView === 'change') html += renderChangeView();
+            else if (state.adminView === 'chapter') html += renderChapterView();
+            html += '</div></div>';
+            return html;
+        }
+
+        function renderStudentList() {
+            const results = state.dbResults || [];
+            const all = results;
+            
+            let html = '<div class="space-y-3"><div class="flex justify-between items-center">';
+            html += '<h3 class="text-lg font-bold">📊 Student Results (Cloud)</h3>';
+            html += '<button onclick="gotoMenu()" class="px-3 py-1 border-2 rounded-lg hover:bg-gray-50">⬅ Back</button></div>';
+            
+            if (state.isLoading) {
+                html += '<div class="text-center py-8"><div class="text-4xl mb-2">⏳</div><p class="text-gray-600">Loading from cloud...</p></div>';
+                return html + '</div>';
+            }
+            
+            if (all.length > 0) {
+                const avg = Math.round(all.reduce((s, r) => s + r.score, 0) / all.length);
+                const ex = all.filter(r => r.grade === 'Excellent').length;
+                const gd = all.filter(r => r.grade === 'Good').length;
+                const en = all.filter(r => r.grade === 'Enough').length;
+                const bd = all.filter(r => r.grade === 'Bad').length;
+                html += '<div class="grid grid-cols-2 gap-2">';
+                html += '<div class="bg-blue-50 border-2 border-blue-300 rounded-lg p-3 text-center"><p class="text-xs text-blue-600 font-bold">Total Students</p><p class="text-2xl font-black text-blue-900">' + all.length + '</p></div>';
+                html += '<div class="bg-purple-50 border-2 border-purple-300 rounded-lg p-3 text-center"><p class="text-xs text-purple-600 font-bold">Average</p><p class="text-2xl font-black text-purple-900">' + avg + '</p></div></div>';
+                html += '<div class="grid grid-cols-4 gap-2">';
+                html += '<div class="bg-green-50 border border-green-300 rounded-lg p-2 text-center"><p class="text-xs text-green-600 font-bold">Excellent</p><p class="text-lg font-black text-green-900">' + ex + '</p></div>';
+                html += '<div class="bg-blue-50 border border-blue-300 rounded-lg p-2 text-center"><p class="text-xs text-blue-600 font-bold">Good</p><p class="text-lg font-black text-blue-900">' + gd + '</p></div>';
+                html += '<div class="bg-yellow-50 border border-yellow-300 rounded-lg p-2 text-center"><p class="text-xs text-yellow-600 font-bold">Enough</p><p class="text-lg font-black text-yellow-900">' + en + '</p></div>';
+                html += '<div class="bg-red-50 border border-red-300 rounded-lg p-2 text-center"><p class="text-xs text-red-600 font-bold">Bad</p><p class="text-lg font-black text-red-900">' + bd + '</p></div></div>';
+            }
+            html += '<div class="bg-gray-50 border-2 border-gray-300 rounded-lg p-3 space-y-2"><p class="text-xs font-bold text-gray-700">🔍 FILTERS:</p>';
+            html += '<div><label class="text-xs font-semibold text-gray-600">Level</label>';
+            html += '<select onchange="state.filterLevel=this.value; renderStudentListData()" class="w-full mt-1 px-2 py-1 border rounded text-sm">';
+            html += '<option value="all"' + (state.filterLevel === 'all' ? ' selected' : '') + '>All Levels</option>';
+            html += '<option value="beginner"' + (state.filterLevel === 'beginner' ? ' selected' : '') + '>Beginner</option>';
+            html += '<option value="intermediate"' + (state.filterLevel === 'intermediate' ? ' selected' : '') + '>Intermediate</option>';
+            html += '<option value="advanced"' + (state.filterLevel === 'advanced' ? ' selected' : '') + '>Advanced</option>';
+            html += '<option value="expert"' + (state.filterLevel === 'expert' ? ' selected' : '') + '>Expert</option></select></div>';
+            html += '<div><label class="text-xs font-semibold text-gray-600">Class</label>';
+            html += '<input value="' + state.filterClass + '" oninput="state.filterClass=this.value" placeholder="e.g., 9A" class="w-full mt-1 px-2 py-1 border rounded text-sm"/></div>';
+            html += '<div><label class="text-xs font-semibold text-gray-600">Name</label>';
+            html += '<input value="' + state.searchName + '" oninput="state.searchName=this.value" placeholder="Search..." class="w-full mt-1 px-2 py-1 border rounded text-sm"/></div>';
+            html += '<button onclick="renderStudentListData()" class="w-full mt-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-sm">🔍 Search</button>';
+            html += '</div>';
+            if (results.length > 0) {
+                html += '<div class="grid grid-cols-2 gap-2">';
+                html += '<button onclick="downloadExcel()" class="px-3 py-2 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg text-sm flex items-center justify-center gap-2"><span>📊</span> Excel</button>';
+                html += '<button onclick="downloadPDF()" class="px-3 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-sm flex items-center justify-center gap-2"><span>📄</span> PDF</button></div>';
+            }
+            html += '<div class="bg-blue-50 border-2 border-blue-300 rounded-lg p-2"><p class="text-xs text-blue-800 font-bold">Showing: ' + results.length + ' students</p></div>';
+            if (results.length === 0) {
+                html += '<div class="text-center py-8"><p class="text-gray-500 font-semibold">No results found</p></div>';
+            } else {
+                html += '<div class="max-h-[40vh] overflow-y-auto space-y-2">';
+                results.forEach(r => {
+                    const bc = r.grade === 'Excellent' ? 'border-green-300' : r.grade === 'Good' ? 'border-blue-300' : r.grade === 'Enough' ? 'border-yellow-300' : 'border-red-300';
+                    html += '<div class="border-2 rounded-lg p-3 bg-white ' + bc + '">';
+                    html += '<div class="flex justify-between items-start mb-2"><div class="flex-1">';
+                    html += '<p class="font-black text-gray-900 text-sm">' + r.name + '</p>';
+                    html += '<p class="text-xs text-gray-600">Class: <span class="font-bold">' + r.class + '</span> | Level: <span class="font-bold">' + getLevelName(r.level) + '</span></p>';
+                    html += '<p class="text-xs text-gray-500">' + r.date + ' - ' + r.time + '</p></div>';
+                    html += '<div class="text-right"><p class="text-2xl font-black text-gray-900">' + r.score + '</p>';
+                    html += '<p class="text-xs font-bold px-2 py-1 rounded ' + getScoreColorLight(r.grade) + '">' + r.grade + '</p></div></div>';
+                    html += '<div class="flex gap-2 flex-wrap text-xs mb-2">';
+                    r.missionScores.forEach((ms, i) => {
+                        html += '<span class="px-2 py-1 rounded font-bold ' + getScoreColorLight(ms) + '">M' + (i + 1) + ': ' + ms + '</span>';
+                    });
+                    html += '</div>';
+                    html += '<button onclick="deleteResult(\'' + r.id + '\')" class="w-full px-3 py-1 bg-red-600 hover:bg-red-700 text-white font-bold rounded text-xs">🗑️ Delete</button></div>';
+                });
+                html += '</div>';
+                html += '<button onclick="clearAllResults()" class="w-full px-4 py-2 bg-red-700 hover:bg-red-800 text-white font-bold rounded-lg text-sm">⚠️ DELETE ALL</button>';
+            }
+            html += '</div>';
+            return html;
+        }
+
+        function renderChapterView() {
+            let html = '<div class="space-y-4"><div class="flex justify-between items-center">';
+            html += '<h3 class="text-lg font-bold">Change Chapter & Unit</h3>';
+            html += '<button onclick="gotoMenu()" class="px-3 py-1 border-2 rounded-lg hover:bg-gray-50">⬅ Back</button></div>';
+            html += '<div><label class="text-sm font-semibold text-gray-700">Chapter Title</label>';
+            html += '<input id="chInput" value="' + state.chapterTitle + '" placeholder="Chapter" class="w-full mt-1 px-3 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"/></div>';
+            html += '<div><label class="text-sm font-semibold text-gray-700">Unit Title</label>';
+            html += '<input id="unInput" value="' + state.unitTitle + '" placeholder="Unit" class="w-full mt-1 px-3 py-2 border-2 rounded-lg focus:border-blue-500 focus:outline-none"/></div>';
+            html += '<div class="grid grid-cols-2 gap-2">';
+            html += '<button onclick="gotoMenu()" class="px-4 py-2 border-2 rounded-lg hover:bg-gray-50">Cancel</button>';
+            html += '<button onclick="updateChapter()" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg">Save</button></div></div>';
+            return html;
+        }
+
+        function renderAddView() {
+            const count = missionsByLevel[state.adminSelectedLevel].length;
+            let html = '<div class="space-y-3"><div class="flex justify-between items-center">';
+            html += '<h3 class="text-lg font-bold">Add Material</h3>';
+            html += '<button onclick="gotoMenu()" class="px-3 py-1 border-2 rounded-lg hover:bg-gray-50">⬅ Back</button></div>';
+            html += '<div><label class="text-sm font-semibold text-gray-700">Level</label>';
+            html += '<select onchange="state.adminSelectedLevel=this.value; render()" class="w-full mt-1 px-3 py-2 border-2 rounded-lg">';
+            html += '<option value="beginner"' + (state.adminSelectedLevel === 'beginner' ? ' selected' : '') + '>Beginner</option>';
+            html += '<option value="intermediate"' + (state.adminSelectedLevel === 'intermediate' ? ' selected' : '') + '>Intermediate</option>';
+            html += '<option value="advanced"' + (state.adminSelectedLevel === 'advanced' ? ' selected' : '') + '>Advanced</option>';
+            html += '<option value="expert"' + (state.adminSelectedLevel === 'expert' ? ' selected' : '') + '>Expert</option>';
+            html += '</select><p class="text-xs text-gray-500 mt-1">Current: <span class="font-bold">' + count + '</span> missions</p></div>';
+            html += '<div><label class="text-sm font-semibold text-gray-700">Sentence</label>';
+            html += '<textarea oninput="state.adminNewSentence=this.value" placeholder="Type sentence..." class="w-full mt-1 px-3 py-2 border-2 rounded-lg min-h-[100px]"></textarea></div>';
+            html += '<div class="grid grid-cols-2 gap-2">';
+            html += '<button onclick="gotoMenu()" class="px-4 py-2 border-2 rounded-lg hover:bg-gray-50">Cancel</button>';
+            html += '<button onclick="addMaterial()" class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg">Save</button></div></div>';
+            return html;
+        }
+
+        function renderChangeView() {
+            const lvl = state.adminSelectedLevel;
+            const list = missionsByLevel[lvl];
+            let html = '<div class="space-y-3"><div class="flex justify-between items-center">';
+            html += '<h3 class="text-lg font-bold">Change Material</h3>';
+            html += '<button onclick="gotoMenu()" class="px-3 py-1 border-2 rounded-lg hover:bg-gray-50">⬅ Back</button></div>';
+            html += '<div><label class="text-sm font-semibold text-gray-700">Level</label>';
+            html += '<select onchange="state.adminSelectedLevel=this.value; state.adminEditIndex=null; render()" class="w-full mt-1 px-3 py-2 border-2 rounded-lg">';
+            html += '<option value="beginner"' + (lvl === 'beginner' ? ' selected' : '') + '>Beginner</option>';
+            html += '<option value="intermediate"' + (lvl === 'intermediate' ? ' selected' : '') + '>Intermediate</option>';
+            html += '<option value="advanced"' + (lvl === 'advanced' ? ' selected' : '') + '>Advanced</option>';
+            html += '<option value="expert"' + (lvl === 'expert' ? ' selected' : '') + '>Expert</option>';
+            html += '</select><p class="text-xs text-gray-500 mt-1">Total: <span class="font-bold">' + list.length + '</span> missions</p></div>';
+            html += '<div class="max-h-[50vh] overflow-y-auto space-y-2">';
+            list.forEach((item, idx) => {
+                html += '<div class="border-2 rounded-lg p-3"><div class="text-xs text-gray-500 mb-1 font-semibold">#' + (idx + 1) + '</div>';
+                if (state.adminEditIndex === idx) {
+                    html += '<textarea oninput="state.adminEditValue=this.value" class="w-full px-3 py-2 border-2 rounded-lg min-h-[80px]">' + state.adminEditValue + '</textarea>';
+                    html += '<div class="flex gap-2 mt-2">';
+                    html += '<button onclick="saveEdit(\'' + lvl + '\', ' + idx + ')" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-sm">Save</button>';
+                    html += '<button onclick="cancelEdit()" class="px-3 py-1 border-2 rounded-lg hover:bg-gray-50 text-sm">Cancel</button></div>';
+                } else {
+                    html += '<p class="text-sm font-semibold text-gray-800 mb-2">' + item + '</p>';
+                    html += '<div class="flex gap-2">';
+                    html += '<button onclick="startEdit(\'' + lvl + '\', ' + idx + ')" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-sm">Edit</button>';
+                    html += '<button onclick="deleteMaterial(\'' + lvl + '\', ' + idx + ')" class="px-3 py-1 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-sm">Delete</button></div>';
+                }
+                html += '</div>';
+            });
+            html += '</div></div>';
+            return html;
+        }
+
+        function renderFinalScore(app) {
+            const fs = getFinalScore();
+            const fg = getFinalGrade(fs);
+            let html = '<div class="min-h-screen flex items-center justify-center p-4">';
+            html += '<div class="bg-white rounded-3xl shadow-2xl p-6 max-w-2xl w-full">';
+            html += '<div class="text-center mb-6"><div class="text-6xl mb-3">🏆</div>';
+            html += '<h1 class="text-3xl font-bold text-gray-900 mb-1">Assessment Complete!</h1>';
+            html += '<p class="text-green-600 font-bold">✅ Data tersimpan di cloud</p></div>';
+            html += '<div class="bg-gradient-to-r from-blue-50 to-purple-50 rounded-2xl p-5 mb-4 border-2 border-blue-300">';
+            html += '<div class="grid grid-cols-2 gap-4 mb-3">';
+            html += '<div class="text-center border-r border-blue-300"><p class="text-xs text-gray-500 font-bold mb-2">STUDENT</p>';
+            html += '<p class="text-lg font-black text-gray-900">' + state.studentName + '</p></div>';
+            html += '<div class="text-center"><p class="text-xs text-gray-500 font-bold mb-2">CLASS</p>';
+            html += '<p class="text-lg font-black text-gray-900">' + state.studentClass + '</p></div></div>';
+            html += '<div class="text-center pt-3 border-t border-blue-300">';
+            html += '<span class="' + getLevelColor(state.selectedLevel) + ' text-white px-4 py-2 rounded-lg font-black text-sm">' + getLevelName(state.selectedLevel) + '</span></div></div>';
+            html += '<div class="bg-gradient-to-r from-purple-100 to-pink-100 rounded-2xl p-6 mb-5 border-2 border-purple-300">';
+            html += '<h2 class="text-xl font-semibold text-center mb-3 text-gray-900">Final Score</h2>';
+            html += '<div class="text-5xl font-bold text-center text-purple-600 mb-2">' + fs + '</div>';
+            html += '<div class="text-2xl font-bold text-center py-3 px-4 rounded-xl ' + getScoreColorLight(fg) + '">' + fg + '</div></div>';
+            html += '<div class="space-y-2 mb-5"><h3 class="font-semibold text-gray-800 mb-2">Score per Mission (7 Missions):</h3>';
+            state.missionScores.forEach((score, idx) => {
+                html += '<div class="flex justify-between items-center bg-gray-50 p-3 rounded-xl border border-gray-200">';
+                html += '<span class="text-gray-700 font-medium">Mission ' + (idx + 1) + '</span>';
+                html += '<span class="font-bold px-4 py-1 rounded-lg ' + getScoreColorLight(score) + '">' + score + '</span></div>';
+            });
+            html += '</div>';
+            html += '<button onclick="restartApp()" class="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-4 rounded-xl font-bold text-lg hover:from-purple-600 hover:to-pink-600 shadow-lg transform hover:scale-105 transition">🔄 Start New Assessment</button>';
+            html += '</div></div>';
+            app.innerHTML = html;
+        }
+
+        function renderAssessment(app) {
+            const missions = missionsByLevel[state.selectedLevel];
+            const total = missions.length;
+            const cs = state.missionScores[state.currentMission];
+            
+            let html = '<div class="space-y-3">';
+            html += '<div class="bg-white rounded-2xl p-4 shadow-lg border-2 border-blue-200">';
+            html += '<div class="grid grid-cols-2 gap-4 mb-3">';
+            html += '<div class="border-r border-gray-300 pr-3"><p class="text-xs text-gray-500 font-bold mb-1">STUDENT</p>';
+            html += '<p class="text-base font-black text-gray-900 truncate">' + state.studentName + '</p></div>';
+            html += '<div class="pl-3"><p class="text-xs text-gray-500 font-bold mb-1">CLASS</p>';
+            html += '<p class="text-base font-black text-gray-900">' + state.studentClass + '</p></div></div>';
+            html += '<div class="flex justify-between items-center pt-3 border-t border-gray-300">';
+            html += '<span class="' + getLevelColor(state.selectedLevel) + ' text-white px-3 py-1 rounded-lg font-bold text-xs">' + getLevelName(state.selectedLevel) + '</span>';
+            html += '<button onclick="exitToHome()" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-lg font-bold text-xs flex items-center gap-1"><span>🚪</span> OUT</button>';
+            html += '</div></div>';
+            
+            html += '<div class="bg-white rounded-2xl p-4 shadow-lg border-2 border-gray-300">';
+            html += '<p class="text-sm font-bold text-gray-800 mb-3">📋 STEPS:</p>';
+            html += '<ol class="text-xs text-gray-700 space-y-1 list-decimal list-inside">';
+            html += '<li>Click <span class="text-blue-600 font-bold">LISTEN</span> to hear pronunciation</li>';
+            html += '<li>Click <span class="text-green-600 font-bold">JUDGE</span> to start recording</li>';
+            html += '<li><span class="font-bold">Read the sentence</span> clearly and loudly</li>';
+            html += '<li>Wait for text to appear (green box)</li>';
+            html += '<li>Click <span class="text-blue-600 font-bold">RESULT</span> to see your score</li>';
+            html += '<li>Click <span class="text-purple-600 font-bold">NEXT</span> for next mission</li>';
+            html += '</ol></div>';
+            
+            html += '<button onclick="testMic()" class="w-full bg-gradient-to-r from-green-500 to-blue-500 text-white py-3 px-4 rounded-2xl font-black text-base hover:from-green-600 hover:to-blue-600 shadow-lg flex items-center justify-center gap-2"><span class="text-2xl">🎤</span> TEST MICROPHONE</button>';
+            html += '<div class="bg-white rounded-3xl shadow-2xl p-5"><div class="text-center mb-4">';
+            html += '<div class="flex items-center justify-center gap-2 mb-2"><span class="text-3xl">📚</span>';
+            html += '<h1 class="text-xl font-bold text-gray-900">Reading Test</h1></div>';
+            html += '<p class="text-xs text-gray-600 font-semibold">' + state.chapterTitle + ' - ' + state.unitTitle + '</p>';
+            html += '<p class="text-lg font-bold text-gray-900 mt-2">Mission ' + (state.currentMission + 1) + ' of ' + total + '</p>';
+            html += '<div class="w-full bg-gray-200 rounded-full h-3 mt-2">';
+            html += '<div class="bg-gradient-to-r from-blue-500 to-purple-600 h-3 rounded-full transition-all" style="width: ' + (((state.currentMission + 1) / total) * 100) + '%"></div></div></div>';
+            html += '<div class="bg-gradient-to-r from-blue-50 to-purple-50 rounded-2xl p-4 mb-4 border-2 border-blue-300">';
+            html += '<div class="flex justify-between items-start mb-3"><h2 class="text-sm font-bold text-gray-900">📖 Read this:</h2>';
+            html += '<button onclick="speakText()" class="flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm shadow-lg transition ' + (state.isSpeaking ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white') + '">🔊 ' + (state.isSpeaking ? 'STOP' : 'LISTEN') + '</button></div>';
+            html += '<p class="text-base text-gray-900 leading-relaxed font-semibold">"' + missions[state.currentMission] + '"</p></div>';
+            if (state.isRecording) {
+                html += '<div class="bg-red-50 border-2 border-red-500 rounded-2xl p-4 mb-4 text-center animate-pulse">';
+                html += '<div class="text-5xl mb-2">🎤</div><p class="text-red-800 font-black text-lg">RECORDING...</p></div>';
+            }
+            if (state.transcript) {
+                html += '<div class="bg-green-50 border-2 border-green-500 rounded-2xl p-4 mb-4">';
+                html += '<p class="text-xs text-green-700 font-bold mb-2">✅ YOUR RECORDING:</p>';
+                html += '<p class="text-sm text-gray-900 font-semibold italic mb-3">"' + state.transcript + '"</p>';
+                html += '<p class="text-yellow-700 font-bold text-xs">👉 Click RESULT to get score</p>';
+                html += '</div>';
+            }
+            if (state.showResult && cs) {
+                html += '<div class="rounded-2xl p-5 mb-4 text-center border-4 shadow-xl ' + getScoreColor(cs) + '">';
+                html += '<div class="text-5xl mb-2">✔</div><p class="text-sm font-bold mb-1">YOUR SCORE:</p>';
+                html += '<p class="text-4xl font-black mb-2">' + cs + '</p></div>';
+            }
+            html += '<div class="grid grid-cols-3 gap-3 mb-4">';
+            html += '<button onclick="handleJudge()"' + (state.isRecording ? ' disabled' : '') + ' class="bg-green-500 text-white py-4 rounded-2xl font-black text-sm hover:bg-green-600 disabled:bg-gray-400 shadow-lg transition transform hover:scale-105"><div class="text-2xl mb-1">🎤</div>JUDGE</button>';
+            html += '<button onclick="handleResult()"' + (!state.transcript || state.isRecording ? ' disabled' : '') + ' class="bg-blue-500 text-white py-4 rounded-2xl font-black text-sm hover:bg-blue-600 disabled:bg-gray-400 shadow-lg transition transform hover:scale-105"><div class="text-2xl mb-1">✔</div>RESULT</button>';
+            html += '<button onclick="handleNext()"' + (!cs ? ' disabled' : '') + ' class="bg-purple-500 text-white py-4 rounded-2xl font-black text-sm hover:bg-purple-600 disabled:bg-gray-400 shadow-lg transition transform hover:scale-105"><div class="text-2xl mb-1">→</div>' + (state.currentMission < total - 1 ? 'NEXT' : 'FINISH') + '</button></div>';
+            html += '<div class="flex justify-center gap-2 flex-wrap">';
+            missions.forEach((_, idx) => {
+                const ac = state.missionScores[idx] ? 'bg-green-500 text-white' : (idx === state.currentMission ? 'bg-blue-500 text-white' : 'bg-gray-300 text-gray-600');
+                html += '<div class="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shadow-md ' + ac + '">' + (idx + 1) + '</div>';
+            });
+            html += '</div></div></div>';
+            app.innerHTML = html;
+        }
+        
+        // Inisialisasi saat load
+        window.onload = function() {
+            initSupabase();
+            render();
+        };
+    </script>
+</body>
+</html>
