@@ -35,6 +35,7 @@
         const ADMIN_PASSWORD = '123456';
         const STORAGE_KEY = 'reading_missions_v1';
         const CHAPTER_KEY = 'chapter_unit_v1';
+        const AUDIO_BUCKET = 'recordings';
         
         // ============================================
         // MATERI MEMBACA - SEMUA LEVEL 7 MATERI
@@ -94,13 +95,89 @@
             adminSelectedLevel: 'beginner', adminNewSentence: '', adminEditIndex: null, adminEditValue: '',
             chapterTitle: 'Chapter 2: Taking Trips', unitTitle: 'Unit 2: What an Experience',
             filterLevel: 'all', filterClass: '', searchName: '',
-            isLoading: false, dbResults: []
+            isLoading: false, dbResults: [],
+            audioBlobs: [], currentAudioURL: null, isUploadingAudio: false
         };
+
+        // Variabel rekaman audio (di luar state karena Blob/MediaRecorder tidak perlu re-render)
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let currentPlayingAudio = null;
 
         let missionsByLevel = loadMissions();
         const saved = loadChapterUnit();
         state.chapterTitle = saved.chapter;
         state.unitTitle = saved.unit;
+
+        // ============================================
+        // FUNGSI REKAM & PUTAR AUDIO (ANTI-KECURANGAN)
+        // ============================================
+        
+        function stopAudioRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+            }
+        }
+
+        async function startAudioRecording() {
+            audioChunks = [];
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const mimeType = (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm'))
+                    ? 'audio/webm' : 'audio/mp4';
+                mediaRecorder = new MediaRecorder(stream, { mimeType });
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(audioChunks, { type: mimeType });
+                    state.audioBlobs[state.currentMission] = blob;
+                    if (state.currentAudioURL) URL.revokeObjectURL(state.currentAudioURL);
+                    state.currentAudioURL = URL.createObjectURL(blob);
+                    stream.getTracks().forEach(t => t.stop());
+                    render();
+                };
+                mediaRecorder.start();
+                return true;
+            } catch (err) {
+                console.error('Gagal merekam audio:', err);
+                return false;
+            }
+        }
+
+        async function uploadAudioToStorage(blob, studentName, level, missionIndex) {
+            if (!supabaseClient || !blob) return null;
+            try {
+                const safeName = studentName.replace(/[^a-zA-Z0-9]/g, '_');
+                const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+                const fileName = `${Date.now()}_${safeName}_${level}_M${missionIndex + 1}.${ext}`;
+                
+                const { error } = await supabaseClient.storage
+                    .from(AUDIO_BUCKET)
+                    .upload(fileName, blob, { contentType: blob.type });
+                
+                if (error) throw error;
+                
+                const { data: urlData } = supabaseClient.storage
+                    .from(AUDIO_BUCKET)
+                    .getPublicUrl(fileName);
+                
+                return urlData.publicUrl;
+            } catch (err) {
+                console.error('❌ Error upload audio:', err);
+                return null;
+            }
+        }
+
+        function playAudio(url) {
+            if (!url) { alert('⚠️ Rekaman audio tidak tersedia'); return; }
+            if (currentPlayingAudio) {
+                currentPlayingAudio.pause();
+                currentPlayingAudio = null;
+            }
+            currentPlayingAudio = new Audio(url);
+            currentPlayingAudio.play().catch(() => alert('Gagal memutar audio'));
+        }
 
         // ============================================
         // FUNGSI DATABASE SUPABASE
@@ -126,7 +203,8 @@
                         grade: resultData.grade,
                         chapter_title: resultData.chapter,
                         unit_title: resultData.unit,
-                        mission_scores: resultData.missionScores
+                        mission_scores: resultData.missionScores,
+                        audio_urls: resultData.audioUrls || []
                     }]);
                 
                 if (error) throw error;
@@ -177,7 +255,8 @@
                     time: new Date(r.created_at).toLocaleTimeString('id-ID'),
                     chapter: r.chapter_title,
                     unit: r.unit_title,
-                    missionScores: r.mission_scores || []
+                    missionScores: r.mission_scores || [],
+                    audioUrls: r.audio_urls || []
                 }));
             } catch (err) {
                 console.error('❌ Error loading from Supabase:', err);
@@ -243,8 +322,16 @@
                 state.isRecording = false; 
                 render(); 
             };
-            r.onerror = () => { state.isRecording = false; render(); };
-            r.onend = () => { state.isRecording = false; render(); };
+            r.onerror = () => { 
+                state.isRecording = false; 
+                stopAudioRecording();
+                render(); 
+            };
+            r.onend = () => { 
+                state.isRecording = false; 
+                stopAudioRecording();
+                render(); 
+            };
             state.recognition = r;
             return true;
         }
@@ -272,6 +359,7 @@
             state.selectedLevel = l; 
             state.showForm = false;
             state.missionScores = Array(missionsByLevel[l].length).fill(null);
+            state.audioBlobs = Array(missionsByLevel[l].length).fill(null);
             initSpeech();
             render();
         }
@@ -291,10 +379,21 @@
             window.speechSynthesis.speak(u);
         }
 
-        function handleJudge() {
+        async function handleJudge() {
             if (!state.recognition) return;
             state.transcript = ''; 
             state.showResult = false;
+            if (state.currentAudioURL) {
+                URL.revokeObjectURL(state.currentAudioURL);
+                state.currentAudioURL = null;
+            }
+            
+            const recOk = await startAudioRecording();
+            if (!recOk) {
+                alert('❌ Tidak bisa mengakses microphone untuk merekam!');
+                return;
+            }
+            
             try { 
                 state.recognition.start(); 
             } catch {}
@@ -340,6 +439,10 @@
                 state.currentMission++; 
                 state.transcript = ''; 
                 state.showResult = false;
+                if (state.currentAudioURL) {
+                    URL.revokeObjectURL(state.currentAudioURL);
+                    state.currentAudioURL = null;
+                }
                 render();
             } else { 
                 await saveStudentResult();
@@ -352,6 +455,22 @@
             const finalScore = getFinalScore();
             const finalGrade = getFinalGrade(finalScore);
             
+            state.isUploadingAudio = true;
+            render();
+            
+            const audioUrls = [];
+            for (let i = 0; i < state.audioBlobs.length; i++) {
+                const blob = state.audioBlobs[i];
+                if (blob) {
+                    const url = await uploadAudioToStorage(blob, state.studentName, state.selectedLevel, i);
+                    audioUrls.push(url);
+                } else {
+                    audioUrls.push(null);
+                }
+            }
+            
+            state.isUploadingAudio = false;
+            
             const resultData = {
                 name: state.studentName,
                 class: state.studentClass,
@@ -360,7 +479,8 @@
                 grade: finalGrade,
                 chapter: state.chapterTitle,
                 unit: state.unitTitle,
-                missionScores: [...state.missionScores]
+                missionScores: [...state.missionScores],
+                audioUrls: audioUrls
             };
             
             await saveToSupabase(resultData);
@@ -427,6 +547,11 @@
             state.transcript = ''; 
             state.showResult = false; 
             state.missionScores = [];
+            if (state.currentAudioURL) {
+                URL.revokeObjectURL(state.currentAudioURL);
+                state.currentAudioURL = null;
+            }
+            state.audioBlobs = [];
             render();
         }
         
@@ -441,6 +566,11 @@
                 state.studentName = '';
                 state.studentClass = '';
                 state.selectedLevel = '';
+                if (state.currentAudioURL) {
+                    URL.revokeObjectURL(state.currentAudioURL);
+                    state.currentAudioURL = null;
+                }
+                state.audioBlobs = [];
                 render();
             }
         }
@@ -832,7 +962,12 @@
                     html += '<p class="text-xs font-bold px-2 py-1 rounded ' + getScoreColorLight(r.grade) + '">' + r.grade + '</p></div></div>';
                     html += '<div class="flex gap-2 flex-wrap text-xs mb-2">';
                     r.missionScores.forEach((ms, i) => {
-                        html += '<span class="px-2 py-1 rounded font-bold ' + getScoreColorLight(ms) + '">M' + (i + 1) + ': ' + ms + '</span>';
+                        const aUrl = (r.audioUrls && r.audioUrls[i]) ? r.audioUrls[i] : null;
+                        html += '<span class="px-2 py-1 rounded font-bold inline-flex items-center gap-1 ' + getScoreColorLight(ms) + '">M' + (i + 1) + ': ' + ms;
+                        if (aUrl) {
+                            html += ' <button onclick="playAudio(\'' + aUrl + '\')" title="Putar rekaman" class="hover:scale-125 transition">🔊</button>';
+                        }
+                        html += '</span>';
                     });
                     html += '</div>';
                     html += '<button onclick="deleteResult(\'' + r.id + '\')" class="w-full px-3 py-1 bg-red-600 hover:bg-red-700 text-white font-bold rounded text-xs">🗑️ Delete</button></div>';
@@ -944,6 +1079,11 @@
         }
 
         function renderAssessment(app) {
+            if (state.isUploadingAudio) {
+                app.innerHTML = '<div class="min-h-screen flex items-center justify-center p-4"><div class="bg-white rounded-3xl shadow-2xl p-8 text-center"><div class="text-5xl mb-3">☁️</div><p class="text-gray-700 font-bold">Mengupload rekaman audio...</p><p class="text-xs text-gray-500 mt-1">Mohon tunggu sebentar</p></div></div>';
+                return;
+            }
+            
             const missions = missionsByLevel[state.selectedLevel];
             const total = missions.length;
             const cs = state.missionScores[state.currentMission];
@@ -991,6 +1131,9 @@
                 html += '<div class="bg-green-50 border-2 border-green-500 rounded-2xl p-4 mb-4">';
                 html += '<p class="text-xs text-green-700 font-bold mb-2">✅ YOUR RECORDING:</p>';
                 html += '<p class="text-sm text-gray-900 font-semibold italic mb-3">"' + state.transcript + '"</p>';
+                if (state.currentAudioURL) {
+                    html += '<audio controls class="w-full mb-2" src="' + state.currentAudioURL + '"></audio>';
+                }
                 html += '<p class="text-yellow-700 font-bold text-xs">👉 Click RESULT to get score</p>';
                 html += '</div>';
             }
