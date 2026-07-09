@@ -196,7 +196,7 @@
 
         function autoStartVoiceRecord() {
             state.isVoiceRecording = true;
-            state.voiceCountdown = 5;
+            state.voiceCountdown = 15;
             render();
             startAudioRecording(function(ok) {
                 if (!ok) { state.isVoiceRecording = false; render(); return; }
