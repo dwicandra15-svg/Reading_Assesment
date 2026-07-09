@@ -162,17 +162,54 @@
         // ============================================
         // SPEECH RECOGNITION
         // ============================================
+        // Deteksi mobile/desktop
+        var isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
         function initSpeech() {
             if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) return false;
             var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
             var r = new SR();
             r.continuous = false; r.interimResults = false; r.lang = 'en-US';
-            r.onstart  = function() { state.isRecording = true;  render(); };
-            r.onresult = function(e) { state.transcript = e.results[0][0].transcript; state.isRecording = false; render(); };
-            r.onerror  = function() { state.isRecording = false; stopAudioRecording(); render(); };
-            r.onend    = function() { state.isRecording = false; stopAudioRecording(); render(); };
+            r.onstart  = function() { state.isRecording = true; render(); };
+            r.onresult = function(e) {
+                state.transcript = e.results[0][0].transcript;
+                state.isRecording = false;
+                render();
+            };
+            r.onerror = function() { state.isRecording = false; render(); };
+            r.onend   = function() {
+                state.isRecording = false;
+                if (state.transcript) {
+                    // Laptop: stop recorder yang sudah jalan
+                    // HP: auto-start recorder 5 detik
+                    if (!isMobile) {
+                        stopAudioRecording();
+                    } else {
+                        autoStartVoiceRecord();
+                    }
+                }
+                render();
+            };
             state.recognition = r;
             return true;
+        }
+
+        function autoStartVoiceRecord() {
+            state.isVoiceRecording = true;
+            state.voiceCountdown = 5;
+            render();
+            startAudioRecording(function(ok) {
+                if (!ok) { state.isVoiceRecording = false; render(); return; }
+                voiceTimer = setInterval(function() {
+                    state.voiceCountdown--;
+                    render();
+                    if (state.voiceCountdown <= 0) {
+                        clearInterval(voiceTimer);
+                        voiceTimer = null;
+                        stopAudioRecording();
+                    }
+                }, 1000);
+            });
         }
 
         // ============================================
@@ -385,16 +422,13 @@
             state.isVoiceRecording = false;
             if (voiceTimer) { clearInterval(voiceTimer); voiceTimer = null; }
             render();
-
-            // Mulai rekam audio (non-blocking, silent fail jika HP tidak support)
-            startAudioRecording(function(ok) {
-                console.log(ok ? '🎤 Rekaman audio berjalan' : '⚠️ Rekaman audio tidak tersedia (tapi JUDGE tetap jalan)');
-            });
-
-            // Langsung mulai speech recognition tanpa menunggu audio
-            setTimeout(function() {
-                try { state.recognition.start(); } catch(e) { console.error(e); }
-            }, 150);
+            // Laptop: mulai rekam audio bersamaan
+            if (!isMobile) {
+                startAudioRecording(function(ok) {
+                    console.log(ok ? '🎤 Audio recording berjalan' : '⚠️ Audio tidak tersedia');
+                });
+            }
+            try { state.recognition.start(); } catch(e) { console.error(e); }
         }
 
         function handleResult() {
@@ -850,8 +884,12 @@
                             if (state.transcript) {
                 h += '<div class="bg-green-50 border-2 border-green-500 rounded-2xl p-4 mb-4">';
                 h += '<p class="text-xs text-green-700 font-bold mb-2">✅ YOUR RECORDING:</p>';
-                h += '<p class="text-sm text-gray-900 font-semibold italic mb-3">"'+state.transcript+'"</p>';
-                if (state.currentAudioURL) {
+                h += '<p class="text-sm text-gray-900 font-semibold italic mb-2">"'+state.transcript+'"</p>';
+                if (state.isVoiceRecording) {
+                    h += '<div class="bg-orange-50 border-2 border-orange-400 rounded-xl p-3 mb-2 text-center animate-pulse">';
+                    h += '<p class="text-orange-700 font-black text-sm">🎙️ Baca ulang kalimat! ('+state.voiceCountdown+'s)</p></div>';
+                }
+                if (state.currentAudioURL && !state.isVoiceRecording) {
                     h += '<audio controls class="w-full mb-2" src="'+state.currentAudioURL+'"></audio>';
                 }
                 h += '<p class="text-yellow-700 font-bold text-xs">👉 Click RESULT to get score</p></div>';
