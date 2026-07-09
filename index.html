@@ -121,26 +121,50 @@
 
         async function startAudioRecording() {
             audioChunks = [];
+            // Cek support MediaRecorder
+            if (typeof MediaRecorder === 'undefined') {
+                console.warn('MediaRecorder tidak didukung browser ini');
+                return false;
+            }
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                const mimeType = (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm'))
-                    ? 'audio/webm' : 'audio/mp4';
-                mediaRecorder = new MediaRecorder(stream, { mimeType });
+                // Pilih mimeType yang didukung
+                let mimeType = '';
+                if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+                    mimeType = 'audio/webm;codecs=opus';
+                } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+                    mimeType = 'audio/webm';
+                } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                    mimeType = 'audio/mp4';
+                } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
+                    mimeType = 'audio/ogg';
+                }
+                
+                mediaRecorder = mimeType
+                    ? new MediaRecorder(stream, { mimeType })
+                    : new MediaRecorder(stream);
+
                 mediaRecorder.ondataavailable = (e) => {
-                    if (e.data.size > 0) audioChunks.push(e.data);
+                    if (e.data && e.data.size > 0) audioChunks.push(e.data);
                 };
                 mediaRecorder.onstop = () => {
-                    const blob = new Blob(audioChunks, { type: mimeType });
+                    const finalType = mediaRecorder.mimeType || 'audio/webm';
+                    const blob = new Blob(audioChunks, { type: finalType });
                     state.audioBlobs[state.currentMission] = blob;
                     if (state.currentAudioURL) URL.revokeObjectURL(state.currentAudioURL);
                     state.currentAudioURL = URL.createObjectURL(blob);
+                    // Stop semua track agar mic tidak terkunci
                     stream.getTracks().forEach(t => t.stop());
                     render();
                 };
-                mediaRecorder.start();
+                mediaRecorder.onerror = (e) => {
+                    console.error('MediaRecorder error:', e);
+                    stream.getTracks().forEach(t => t.stop());
+                };
+                mediaRecorder.start(100); // timeslice 100ms agar data tidak hilang
                 return true;
             } catch (err) {
-                console.error('Gagal merekam audio:', err);
+                console.warn('Gagal merekam audio (tidak fatal):', err);
                 return false;
             }
         }
@@ -388,15 +412,17 @@
                 state.currentAudioURL = null;
             }
             
-            const recOk = await startAudioRecording();
-            if (!recOk) {
-                alert('❌ Tidak bisa mengakses microphone untuk merekam!');
-                return;
-            }
+            // Audio recording berjalan paralel, tidak memblokir speech recognition
+            // Jika gagal rekam audio, JUDGE tetap jalan normal
+            startAudioRecording().then(ok => {
+                if (!ok) console.warn('Rekaman audio tidak tersedia, tapi JUDGE tetap berjalan');
+            });
             
             try { 
                 state.recognition.start(); 
-            } catch {}
+            } catch(e) {
+                console.error('Speech recognition error:', e);
+            }
         }
 
         function calculateScore(orig, spk, lvl) {
