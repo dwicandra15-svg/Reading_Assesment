@@ -169,8 +169,8 @@
             r.continuous = false; r.interimResults = false; r.lang = 'en-US';
             r.onstart  = function() { state.isRecording = true;  render(); };
             r.onresult = function(e) { state.transcript = e.results[0][0].transcript; state.isRecording = false; render(); };
-            r.onerror  = function() { state.isRecording = false; render(); };
-            r.onend    = function() { state.isRecording = false; render(); };
+            r.onerror  = function() { state.isRecording = false; stopAudioRecording(); render(); };
+            r.onend    = function() { state.isRecording = false; stopAudioRecording(); render(); };
             state.recognition = r;
             return true;
         }
